@@ -1,0 +1,365 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: kura-aws-cfn-template-study
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2へSSHするためのKeyPair名
+
+  Ec2InstanceType:
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t3.micro
+    Description: EC2インスタンスタイプ
+
+  DbInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    AllowedValues:
+      - db.t3.micro
+      - db.t4g.micro
+    Description: RDSインスタンスクラス
+
+  DbName:
+    Type: String
+    Default: sampledb
+    Description: RDSの初期DB名（学習用）
+
+  DbEngine:
+    Type: String
+    Default: mysql
+    AllowedValues:
+      - mysql
+    Description: RDSのエンジン
+
+  DbMasterUsername:
+      Type: String
+      Default: admin
+      MinLength: 1
+      MaxLength: 16
+      AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+      Description: RDSマスターユーザー名
+
+Resources:
+  TestVPC: #VPC作成
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: cfn-template-study-vpc
+
+  TestInternetGateway: #IGW作成
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: cfn-template-study-public-igw
+
+  TestAttachGatewaytoVPC: #IGWをVPCにアタッチ
+    Type: AWS::EC2::VPCGatewayAttachment
+    DependsOn: TestInternetGateway
+    Properties:
+      VpcId: !Ref TestVPC
+      InternetGatewayId: !Ref TestInternetGateway
+
+##サブネットを4つ作成 
+  TestPublicSubnet1a: #パブリックサブネット1a作成
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVPC
+      CidrBlock: 10.0.10.0/24
+      MapPublicIpOnLaunch: true #「パブリックIPv4アドレスの自動割り当てを有効にする」,外部からアクセス可能にするので true
+      AvailabilityZone: ap-northeast-1a   # 東京リージョン
+      Tags:
+        - Key: Name
+          Value: cfn-template-study-public-subnet-1a
+
+  TestPrivateSubnet1a: #プライベートサブネット1a作成
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVPC
+      CidrBlock: 10.0.20.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: ap-northeast-1a
+      Tags:
+        - Key: Name
+          Value: cfn-template-study-private-subnet-1a
+
+  TestPublicSubnet1c:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVPC
+      CidrBlock: 10.0.11.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: ap-northeast-1c
+      Tags:
+        - Key: Name
+          Value: cfn-template-study-public-subnet-1c
+
+  TestPrivateSubnet1c: #プライベートサブネット1c作成
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TestVPC
+      CidrBlock: 10.0.21.0/24
+      MapPublicIpOnLaunch: false     #重要！
+      AvailabilityZone: ap-northeast-1c   # 東京リージョン
+      Tags:
+        - Key: Name
+          Value: cfn-template-study-private-subnet-1c
+
+  TestPublicRouteTable: #公開用ルートテーブル（Public Subnet用）
+    Type: AWS::EC2::RouteTable
+    DependsOn: TestAttachGatewaytoVPC
+    Properties:
+      VpcId: !Ref TestVPC
+      Tags:
+        - Key: Name
+          Value: cfn-template-study-public-rt
+
+## RouteTableAssociation を4つ分そろえる
+  TestPrivateRouteTable: #1cルートテーブル作成(プライベート用)
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TestVPC
+      Tags:
+        - Key: Name
+          Value: cfn-template-study-private-rt
+
+  TestPublicSubnet1aRouteTableAsso: ## PublicSubnet1a ↔ PublicRouteTable パブリックサブネット化
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref TestPublicSubnet1a
+      RouteTableId: !Ref TestPublicRouteTable
+
+  TestPrivateSubnet1aRouteTableAsso:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref TestPrivateSubnet1a
+      RouteTableId: !Ref TestPrivateRouteTable
+
+  TestPublicSubnet1cRouteTableAsso:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref TestPublicSubnet1c
+      RouteTableId: !Ref TestPublicRouteTable
+
+  TestPublicRouteToInternet: #ルートテーブル-インターネットの内容を設定
+    Type: AWS::EC2::Route
+    DependsOn: TestAttachGatewaytoVPC
+    Properties:
+      RouteTableId: !Ref TestPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0 # 0.0.0.0/0 → IGW
+      GatewayId: !Ref TestInternetGateway
+
+
+# PrivateSubnet1c ↔ PrivateRouteTable # アプリ（EC2）や RDS を配置するが、直接インターネットには出さない
+  TestPrivateSubnet1cRouteTableAsso: 
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref TestPrivateSubnet1c
+      RouteTableId: !Ref TestPrivateRouteTable
+
+
+# EC2はPrivate Subnet・ALB経由だけアクセス可
+  TestAlbSecurityGroup: # ALB用SG
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ALB
+      VpcId: !Ref TestVPC
+      SecurityGroupIngress: # IN: 80番 (HTTP) ← 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress: # OUT: 全許可（デフォルトのままでOK）
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: cfn-study-alb-sg
+
+  TestEc2SecurityGroup:  # EC2用SG
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EC2 behind ALB
+      VpcId: !Ref TestVPC
+      SecurityGroupIngress: #IN
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref TestAlbSecurityGroup
+      SecurityGroupEgress: #OUT
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+
+  TestRdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for RDS
+      VpcId: !Ref TestVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref TestEc2SecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: cfn-study-rds-sg
+
+  TestAppEC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Sub "resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+      InstanceType: !Ref Ec2InstanceType
+      SubnetId: !Ref TestPrivateSubnet1c
+      KeyName: !Ref KeyName
+      SecurityGroupIds:
+        - !Ref TestEc2SecurityGroup
+      Tags:
+        - Key: Name
+          Value: cfn-study-app-ec2
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+          dnf update -y
+          dnf install -y httpd
+          systemctl enable httpd
+          systemctl start httpd
+          echo "It works from EC2" > /var/www/html/index.html
+
+  TestDbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: subnet group for rds
+      SubnetIds: # RDSを PubliclyAccessible: false にして「Privateに閉じる」構成なら、DBSubnetGroup は Private Subnet 2つ（異なるAZ）で作るのが定石
+        - !Ref TestPrivateSubnet1a
+        - !Ref TestPrivateSubnet1c
+      Tags:
+        - Key: Name
+          Value: cfn-study-db-subnet-group
+
+# NAT Gatewayを追加してPrivate Subnetのまま
+  TestNatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  TestNatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt TestNatEip.AllocationId
+      SubnetId: !Ref TestPublicSubnet1c
+      Tags:
+        - Key: Name
+          Value: cfn-study-nat
+
+  TestPrivateRouteToNat:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref TestPrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref TestNatGateway
+
+  TestRDS:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      # 基本設定
+      DBName: !Ref DbName
+      Engine: !Ref DbEngine 
+      AllocatedStorage: "20"  
+      # インスタンス性能・ストレージ
+      DBInstanceClass: !Ref DbInstanceClass
+      # 認証情報
+      MasterUsername: !Ref DbMasterUsername
+      ManageMasterUserPassword: true # RDSが自動でSecrets Managerにパスワードを作って管理する
+
+      DBSubnetGroupName: !Ref TestDbSubnetGroup
+      VPCSecurityGroups: # セキュリティグループの紐付けもここで行うのが一般的
+        - !Ref TestRdsSecurityGroup
+
+  TestAlbTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: cfn-study-elb-target-group
+      VpcId: !Ref TestVPC
+      Protocol: HTTP
+      Port: 80
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      TargetType: instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /
+      HealthCheckPort: traffic-port
+      Matcher:
+        HttpCode: 200
+      Targets:
+        - Id: !Ref TestAppEC2
+          Port: 80
+      Tags:
+        - Key: Name
+          Value: cfn-study-elb-target-group
+
+  TestALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: cfn-study-elb
+      Type: application
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref TestAlbSecurityGroup
+      Subnets:  # ALBを internet-facing で作るなら、ALBは Public Subnet に置くのが基本
+        - !Ref TestPublicSubnet1a
+        - !Ref TestPublicSubnet1c
+      Tags:
+        - Key: Name
+          Value: cfn-study-elb
+
+  TestAlbListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref TestALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TestAlbTargetGroup
+
+Outputs:
+  AlbDnsName:
+    Description: ALBのDNS名（ブラウザ動作確認で使う）
+    Value: !GetAtt TestALB.DNSName
+
+  RdsEndpointAddress:
+    Description: RDSのエンドポイント（接続確認で使う）
+    Value: !GetAtt TestRDS.Endpoint.Address
+
+  RdsEndpointPort:
+    Description: RDSのポート
+    Value: !GetAtt TestRDS.Endpoint.Port
+
+  AlbSecurityGroupId:
+    Description: ALBのSecurityGroup ID
+    Value: !Ref TestAlbSecurityGroup
+
+  Ec2SecurityGroupId:
+    Description: EC2のSecurityGroup ID
+    Value: !Ref TestEc2SecurityGroup
+
+  RdsSecurityGroupId:
+    Description: RDSのSecurityGroup ID
+    Value: !Ref TestRdsSecurityGroup
+
+  RdsMasterUserSecretArn:
+    Description: RDSの認証情報が保存されたSecrets ManagerのARN
+    Value: !GetAtt TestRDS.MasterUserSecret.SecretArn
