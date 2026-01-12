@@ -281,10 +281,10 @@ Resources:
       DBInstanceClass: !Ref DbInstanceClass
       # 認証情報
       MasterUsername: !Ref DbMasterUsername
-      MasterUserPassword: true
+      ManageMasterUserPassword: true # RDSが自動でSecrets Managerにパスワードを作って管理する
 
       DBSubnetGroupName: !Ref TestDbSubnetGroup
-      VPCSecurityGroups: # セキュリティグループの紐付けもここで行うのが一般的です
+      VPCSecurityGroups: # セキュリティグループの紐付けもここで行うのが一般的
         - !Ref TestRdsSecurityGroup
 
   TestAlbTargetGroup:
